@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+
+import asyncio
+import termcolor
+import aiohttp
+
+SERVER_URL = "http://127.0.0.1:12528"
+
+state_display = {
+    "good": termcolor.colored("‎✔ Good", "green"),
+    "available": termcolor.colored("‎✔ Available", "yellow"),
+    "bad": termcolor.colored("✖ Bad", "magenta"),
+    "unreachable": termcolor.colored("✖ Unreachable", "red"),
+}
+
+async def main():
+    logs = None
+    states = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(SERVER_URL + '/logs') as resp:
+                logs = await resp.json()
+            async with session.get(SERVER_URL + '/states') as resp:
+                states = await resp.json()
+    except aiohttp.client_exceptions.ClientConnectionError as e:
+        print('nstatus: Cannot connect to network-switcher\'s status reporter server on %s' % SERVER_URL)
+        return
+
+    names = list(logs.keys())
+
+    name_column_width = max([len(name) for name in names])
+
+    for name in names:
+        print(" * %s%s" % (name, " " * (name_column_width - len(name) + 2)), end="")
+        for log in logs[name]:
+            print("●" if log else termcolor.colored("●", "red"), end="  ")
+        print(state_display[states[name]])
+
+asyncio.get_event_loop().run_until_complete(main())

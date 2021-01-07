@@ -1,0 +1,113 @@
+#!/bin/bash
+
+function cmd() {
+        echo "[+] $*" >&2
+        "$@"
+}
+
+function start_netns() {
+	# LAN_BRIDGE="br-lan"
+        # LOCAL_IP="172.17.0.2"
+        # NETNS_INTERFACE_NAME="lan"
+        # NETNS_OUTPUT_FWMARK="233"
+        # NETNS_OUTPUT_TABLE="233"
+	# SS_RUN_GROUP="nobody"
+	# SS_PID_FILE_DIR="/run/ns-quick/ss-redir"
+	# SS_UDP_FWMARK="234"
+	# SS_UDP_TABLE="234"
+	source /etc/default/ns-quick
+
+        # WG_INTERFACE_NAME="wg-dmit"
+        # NETNS_IP="172.17.0.10"
+        # NETNS_IP_PREFIX_LENGTH="24"
+	# LOCAL_INTERFACE_NAME="veth-ns-dmit"
+	# SS_CONFIG_NAME="ss-dmit"
+	# SS_REDIRECT_PORT=51410
+        NETNS_NAME="$1"
+	source /etc/netns/$NETNS_NAME.conf
+
+	if [[ -f /var/run/netns/$NETNS_NAME ]]; then
+		echo [!] Netns '"'$NETNS_NAME'"' has already started
+		exit 1
+	fi
+
+        cmd ip netns add $NETNS_NAME
+        cmd ip link add $LOCAL_INTERFACE_NAME type veth peer name $NETNS_INTERFACE_NAME netns $NETNS_NAME
+        cmd brctl addif $LAN_BRIDGE $LOCAL_INTERFACE_NAME
+        cmd ip link set $LOCAL_INTERFACE_NAME up
+
+	cmd ip netns exec $NETNS_NAME ip link set dev lo up
+        cmd ip netns exec $NETNS_NAME ip addr add dev $NETNS_INTERFACE_NAME $NETNS_IP/$NETNS_IP_PREFIX_LENGTH
+        cmd ip netns exec $NETNS_NAME ip link set dev $NETNS_INTERFACE_NAME up
+        cmd ip netns exec $NETNS_NAME ip route add default via $LOCAL_IP # Fix wg start
+
+	if [[ "$WG_INTERFACE_NAME" != "" ]]; then
+		cmd ip netns exec $NETNS_NAME ip route add table $NETNS_OUTPUT_TABLE default via $LOCAL_IP dev $NETNS_INTERFACE_NAME
+		cmd ip netns exec $NETNS_NAME ip rule add fwmark $NETNS_OUTPUT_FWMARK lookup $NETNS_OUTPUT_TABLE
+
+	        cmd ip netns exec $NETNS_NAME wg-quick up $WG_INTERFACE_NAME
+
+		cmd ip netns exec $NETNS_NAME iptables -t mangle -A OUTPUT -j MARK --set-mark $NETNS_OUTPUT_FWMARK
+		if [[ "$POSTROUTING_NAT" == "true" ]]; then
+			# NAT (after routing decision, only enables nat)
+			cmd ip netns exec $NETNS_NAME iptables -t mangle -A POSTROUTING -j MARK --set-mark $NETNS_OUTPUT_FWMARK
+		fi
+		cmd ip netns exec $NETNS_NAME iptables -t nat -A POSTROUTING -m mark --mark $NETNS_OUTPUT_FWMARK -j SNAT --to-source $NETNS_IP
+
+		# WG routing
+		cmd ip netns exec $NETNS_NAME ip route del default via $LOCAL_IP
+		cmd ip netns exec $NETNS_NAME ip route add default dev $WG_INTERFACE_NAME
+	fi
+
+	if [[ "$SS_CONFIG_NAME" != "" ]]; then
+		mkdir -p $SS_PID_FILE_DIR
+		SS_PID_FILE="$SS_PID_FILE_DIR/$NETNS_NAME.pid"
+		cmd ip netns exec $NETNS_NAME sg $SS_RUN_GROUP -c "ss-redir -c /etc/shadowsocks/$SS_CONFIG_NAME.json -f $SS_PID_FILE -u -v"
+		cmd ip netns exec $NETNS_NAME iptables -t nat -A PREROUTING -p tcp -j REDIRECT --to-ports $SS_REDIRECT_PORT
+		cmd ip netns exec $NETNS_NAME iptables -t nat -A OUTPUT -p tcp -m owner --gid-owner $SS_RUN_GROUP -j RETURN
+		cmd ip netns exec $NETNS_NAME iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports $SS_REDIRECT_PORT
+
+		# WG not present -- enable SS UDP
+		if [[ "$WG_INTERFACE_NAME" == "" ]]; then
+			cmd ip netns exec $NETNS_NAME iptables -t mangle -A PREROUTING -p udp -d $NETNS_IP -j RETURN
+			cmd ip netns exec $NETNS_NAME iptables -t mangle -A PREROUTING -p udp -j TPROXY --on-port $SS_REDIRECT_PORT --tproxy-mark $SS_UDP_FWMARK/$SS_UDP_FWMARK
+
+			# Redirect OUTPUT to PREROUTING
+			cmd ip netns exec $NETNS_NAME iptables -t mangle -A OUTPUT -m owner --gid-owner $SS_RUN_GROUP -p udp -j RETURN
+			cmd ip netns exec $NETNS_NAME iptables -t mangle -A OUTPUT -p udp -j MARK --set-mark $SS_UDP_FWMARK/$SS_UDP_FWMARK
+
+			cmd ip netns exec $NETNS_NAME ip route add local default dev lo table $SS_UDP_TABLE
+			cmd ip netns exec $NETNS_NAME ip rule add fwmark $SS_UDP_FWMARK lookup $SS_UDP_TABLE
+		fi
+	fi
+
+	cmd ip netns exec $NETNS_NAME ping -c 1 $LOCAL_IP >/dev/null
+}
+
+function stop_netns() {
+	source /etc/default/ns-quick
+
+        NETNS_NAME="$1"
+	source /etc/netns/$NETNS_NAME.conf
+
+	if ! [[ -f /var/run/netns/$NETNS_NAME ]]; then
+		echo [!] Netns '"'$NETNS_NAME'"' has not started
+		exit 1
+	fi
+
+	if [[ "$SS_CONFIG_NAME" != "" ]]; then
+		SS_PID_FILE="$SS_PID_FILE_DIR/$NETNS_NAME.pid"
+		cmd ip netns exec $NETNS_NAME kill $(cat "$SS_PID_FILE")
+		cmd ip netns exec $NETNS_NAME rm $SS_PID_FILE
+	fi
+	cmd ip netns del $NETNS_NAME
+}
+
+if [[ $# -eq 2 && $1 == start ]]; then
+	start_netns $2
+elif [[ $# -eq 2 && $1 == stop ]]; then
+	stop_netns $2
+else
+	PROGRAM="${0##*/}"
+	echo "Usage: $PROGRAM [ start | stop ] [ CONFIG_FILE ]"
+fi

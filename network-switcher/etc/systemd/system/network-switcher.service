@@ -1,0 +1,12 @@
+[Unit]
+Description=Network Switcher Service
+After=network.target network-init.service
+Wants=network.target network-init.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/network-switcher
+ExecStart=screen -LDmS network-switcher bash -c "/root/network-switcher/network-switcher -c /root/network-switcher/config.yaml"
+
+[Install]
+WantedBy=multi-user.target

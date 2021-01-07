@@ -1,0 +1,13 @@
+[Unit]
+Description=Network Namespcae via ns-quick for %I
+After=network-online.target nss-lookup.target network-init.service
+Wants=network-online.target nss-lookup.target network-init.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/ns-quick start %i
+ExecStop=/usr/local/bin/ns-quick stop %i
+
+[Install]
+WantedBy=multi-user.target
