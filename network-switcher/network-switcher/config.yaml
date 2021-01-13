@@ -1,0 +1,64 @@
+consts:
+    # table_id and fwmark is self-increased
+    table_id_start: 233
+    fwmark_start: 233
+    chain_name:
+        main: NETWORK_SWITCHER_MAIN
+        # %d = the order of a matched rule in routing section
+        check: NETWORK_SWITCHER_CHECK_%d
+        rule: NETWORK_SWITCHER_RULE_%d
+
+# The status reporter HTTP server
+status_reporter:
+    host: 127.0.0.1
+    port: 12528
+
+monitor:
+    # Run monitoring command every 3s
+    interval: 3
+    # Keep the most recent 15 logs
+    log_count: 20
+    # The definition of every state of objects
+    states:
+        good: 0.9 < success_rate <= 1.0
+        available: 0.6 < success_rate <= 0.9
+        bad: 0 < success_rate <= 0.6
+        unreachable: success_rate == 0
+    # The objects to watch
+    watches:
+    - name: direct
+      command: ping -I br-lan -c 1 -W 1 1.2.4.8
+    # DMIT HK
+    - name: dmit
+      # curl: Cloudflare DNS server
+      command: ip netns exec ns-dmit curl --max-time 1 --head 1.1.1.1
+    # ByWave HK LeaseWeb
+    - name: bywave-hk-lw
+      # curl: Cloudflare DNS server
+      command: ip netns exec ns-bw-hk-lw curl --max-time 1 --head 1.1.1.1
+
+# Define all available routes
+defined_routes:
+  - name: direct
+    route: via 192.168.1.1
+  - name: dmit
+    route: via 192.168.1.11
+  - name: bywave-hk-lw
+    route: via 192.168.1.10
+
+routing_rules:
+  # Default for Mainland China
+  - name: Mainland China
+    match: ipset
+    match_value: mainland-china
+    route:
+      - condition: "True"
+        to: direct
+    fallthrough: false
+  # Default (will be added as main table's 'default')
+  - name: Default
+    route:
+      - condition: states["dmit"] != "unreachable"
+        to: dmit
+      - condition: states["bywave-hk-lw"] != "unreachable"
+        to: bywave-hk-lw

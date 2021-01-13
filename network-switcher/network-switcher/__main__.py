@@ -124,4 +124,4 @@ loop.add_signal_handler(signal.SIGINT, on_signal)
 loop.add_signal_handler(signal.SIGTERM, on_signal)
 
 loop.run_until_complete(main.start())
-loop.run_until_complete(asyncio.gather(*asyncio.Task.all_tasks()))
+loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
